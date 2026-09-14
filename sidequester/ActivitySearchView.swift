@@ -17,6 +17,10 @@ struct ActivitySearchView: View {
     @State private var selectedShelter = "Any"
     @State private var selectedCompleted = "Any"
 
+    @State private var isImporting = false
+    @State private var importMessage: String?
+    @State private var importSucceeded = false
+
     let ageOptions = ["Any", "Kids", "Teens", "Adults", "Seniors"]
     let effortOptions = ["Any", "Low", "Moderate", "High"]
     let timeOptions = ["Any", "<15 mins", "15-30 mins", "30-60 mins", "1 hour+"]
@@ -51,6 +55,27 @@ struct ActivitySearchView: View {
                             Image(systemName: "plus")
                                 .font(.title2)
                         }
+
+                        Button {
+                            importFromSheet()
+                        } label: {
+                            if isImporting {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.title2)
+                            }
+                        }
+                        .disabled(isImporting)
+                    }
+
+                    if let importMessage {
+                        HStack(spacing: 8) {
+                            Image(systemName: importSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                            Text(importMessage)
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(importSucceeded ? .green : .red)
                     }
 
                     Group {
@@ -153,6 +178,42 @@ struct ActivitySearchView: View {
             } message: {
                 if let activity = activityToDelete {
                     Text("Delete '\(activity.name)' from Firestore?")
+                }
+            }
+        }
+    }
+
+    /// Imports (or refreshes) activities from the published Google Sheet
+    /// into Firestore's "activities" collection. Existing activities are
+    /// matched by name and updated in place; new rows are added.
+    private func importFromSheet() {
+        isImporting = true
+        importMessage = nil
+
+        Task {
+            do {
+                let result = try await SheetImporter.importIntoFirestore(
+                    fromPublishedSheetURL: SheetImporter.sidequesterSheetURL
+                )
+
+                await MainActor.run {
+                    isImporting = false
+                    if result.found == 0 {
+                        importSucceeded = false
+                        importMessage = "The sheet fetch worked, but 0 rows were found — check the URL is pointing at the right tab."
+                    } else if result.imported == 0 {
+                        importSucceeded = false
+                        importMessage = "Found \(result.found) row(s) in the sheet, but none had a usable name — check the sheet's column headers."
+                    } else {
+                        importSucceeded = true
+                        importMessage = "Imported \(result.imported) of \(result.found) activities from the sheet."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isImporting = false
+                    importSucceeded = false
+                    importMessage = error.localizedDescription
                 }
             }
         }

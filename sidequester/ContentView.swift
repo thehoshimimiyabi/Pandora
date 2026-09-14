@@ -180,13 +180,49 @@ struct GlassInput<Content: View>: View {
     }
 }
 
+/// Shared ambient background used behind the tab screens — a soft tinted
+/// gradient with a couple of blurred glow circles for the "liquid glass" feel.
+struct GlassBackground: View {
+    @EnvironmentObject private var customization: AppCustomization
+
+    var topGlowOffset: CGPoint = CGPoint(x: -160, y: -300)
+    var bottomGlowOffset: CGPoint = CGPoint(x: 170, y: 280)
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(.systemBackground),
+                    customization.accentColor.color.opacity(customization.backgroundOpacity),
+                    Color.purple.opacity(customization.backgroundOpacity * 0.7)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+
+            Circle()
+                .fill(customization.accentColor.color.opacity(0.08))
+                .frame(width: 280)
+                .blur(radius: 45)
+                .offset(x: topGlowOffset.x, y: topGlowOffset.y)
+
+            Circle()
+                .fill(Color.purple.opacity(0.08))
+                .frame(width: 300)
+                .blur(radius: 50)
+                .offset(x: bottomGlowOffset.x, y: bottomGlowOffset.y)
+        }
+    }
+}
+
 // MARK: - Content View
 
 struct ContentView: View {
     @StateObject private var customization = AppCustomization()
 
-    @State private var userPoints = 0
     @State private var isLoggedIn = Auth.auth().currentUser != nil
+    @State private var displayName = ""
 
     @State private var activities: [Activity] = [
         Activity(
@@ -313,7 +349,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                background
+                GlassBackground()
                 loggedInContent
             }
         }
@@ -321,33 +357,7 @@ struct ContentView: View {
         .preferredColorScheme(colorScheme)
         .onAppear {
             loadActivities()
-        }
-    }
-
-    private var background: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(.systemBackground),
-                    customization.accentColor.color.opacity(customization.backgroundOpacity),
-                    Color.purple.opacity(customization.backgroundOpacity * 0.7)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            Circle()
-                .fill(customization.accentColor.color.opacity(0.08))
-                .frame(width: 280)
-                .blur(radius: 45)
-                .offset(x: -160, y: -300)
-
-            Circle()
-                .fill(Color.purple.opacity(0.08))
-                .frame(width: 300)
-                .blur(radius: 50)
-                .offset(x: 170, y: 280)
+            listenToDisplayName()
         }
     }
 
@@ -355,24 +365,24 @@ struct ContentView: View {
     private var loggedInContent: some View {
         if isLoggedIn {
             TabView {
-                HomeView(activities: activities)
+                HomeView(activities: activities, displayName: displayName)
                     .tabItem {
                         Label("Home", systemImage: "house.fill")
                     }
 
-                PointsView(userPoints: userPoints)
-                    .tabItem {
-                        Label("Points", systemImage: "star.fill")
+                ProfileView(
+                    onLogout: {
+                        try? Auth.auth().signOut()
+                        isLoggedIn = false
                     }
+                )
+                .tabItem {
+                    Label("Profile", systemImage: "person.crop.circle.fill")
+                }
 
                 LeaderboardView()
                     .tabItem {
                         Label("Friends", systemImage: "person.3.fill")
-                    }
-
-                AchievementsView(userPoints: userPoints)
-                    .tabItem {
-                        Label("Achievements", systemImage: "trophy.fill")
                     }
 
                 ActivitySearchView(activities: activities)
@@ -443,6 +453,18 @@ struct ContentView: View {
                     $0.completedCount > $1.completedCount
                 }
             }
+    }
+
+    /// Live-updates `displayName` (the current user's username) from
+    /// Firestore, so HomeView's greeting stays current — e.g. after the
+    /// person changes their username in Edit Profile.
+    private func listenToDisplayName() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+
+        db.collection("users").document(uid).addSnapshotListener { snapshot, error in
+            guard let data = snapshot?.data() else { return }
+            displayName = data["username"] as? String ?? ""
+        }
     }
 }
 
@@ -833,16 +855,7 @@ struct ForgotPasswordView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [
-                    Color(.systemBackground),
-                    customization.accentColor.color.opacity(customization.backgroundOpacity),
-                    Color.purple.opacity(customization.backgroundOpacity * 0.7)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            GlassBackground()
 
             VStack(spacing: 24) {
                 Image(systemName: "lock.rotation")
@@ -1030,124 +1043,6 @@ struct ForgotPasswordView: View {
                     showSuccess = true
                 }
             }
-    }
-}
-
-// MARK: - Customization Settings
-
-struct CustomizationView: View {
-    @EnvironmentObject private var customization: AppCustomization
-
-    var body: some View {
-        Form {
-            Section("Appearance") {
-                Picker("Mode", selection: Binding(
-                    get: { customization.appearance },
-                    set: { customization.appearance = $0 }
-                )) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.displayName)
-                            .tag(appearance)
-                    }
-                }
-
-                Picker("Accent Color", selection: Binding(
-                    get: { customization.accentColor },
-                    set: { customization.accentColor = $0 }
-                )) {
-                    ForEach(AppThemeColor.allCases) { color in
-                        HStack {
-                            Circle()
-                                .fill(color.color)
-                                .frame(width: 14, height: 14)
-
-                            Text(color.displayName)
-                        }
-                        .tag(color)
-                    }
-                }
-            }
-
-            Section("Liquid Glass") {
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Glassiness")
-                        Spacer()
-                        Text("\(Int(customization.glassOpacity * 100))%")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: $customization.glassOpacity,
-                        in: 0.15...1.0
-                    )
-                }
-
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Blur / Glow")
-                        Spacer()
-                        Text("\(Int(customization.glassBlur))")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: $customization.glassBlur,
-                        in: 0...45
-                    )
-                }
-
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Corner Radius")
-                        Spacer()
-                        Text("\(Int(customization.glassCornerRadius))")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: $customization.glassCornerRadius,
-                        in: 8...45
-                    )
-                }
-
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Glass Border")
-                        Spacer()
-                        Text("\(Int(customization.glassBorderOpacity * 100))%")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: $customization.glassBorderOpacity,
-                        in: 0...0.8
-                    )
-                }
-
-                VStack(alignment: .leading) {
-                    HStack {
-                        Text("Background Glow")
-                        Spacer()
-                        Text("\(Int(customization.backgroundOpacity * 100))%")
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(
-                        value: $customization.backgroundOpacity,
-                        in: 0...0.30
-                    )
-                }
-            }
-
-            Section {
-                Button("Reset All Customization") {
-                    customization.reset()
-                }
-                .foregroundStyle(.red)
-            }
-        }
-        .navigationTitle("Customize")
     }
 }
 
