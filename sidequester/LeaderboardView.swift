@@ -36,6 +36,7 @@ struct LeaderboardView: View {
 
     // Friends system
     @State private var myUsername = ""
+    @State private var myProfileImageURL: String?
     @State private var myFriendIds: Set<String> = []
     @State private var sentRequestUids: Set<String> = []
     @State private var incomingRequests: [FriendRequest] = []
@@ -460,6 +461,7 @@ struct LeaderboardView: View {
         guard let uid = Auth.auth().currentUser?.uid else { return }
         db.collection("users").document(uid).addSnapshotListener { snapshot, _ in
             myUsername = snapshot?.data()?["username"] as? String ?? ""
+            myProfileImageURL = snapshot?.data()?["profileImageURL"] as? String
         }
     }
 
@@ -521,7 +523,7 @@ struct LeaderboardView: View {
         db.collection("friendRequests").addDocument(data: [
             "fromUid": uid,
             "fromUsername": myUsername,
-            "fromProfileImageURL": nil as Any,
+            "fromProfileImageURL": myProfileImageURL as Any,
             "toUid": result.id,
             "toUsername": result.username,
             "status": "pending",
