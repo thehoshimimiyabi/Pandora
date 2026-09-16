@@ -34,6 +34,10 @@ struct ProfileView: View {
     @State private var username = ""
     @State private var points = 0
     @State private var profileImageURL: String?
+    @State private var streak = 0
+    @State private var longestStreak = 0
+    @State private var lifetimeCompletedActivities = 0
+    @State private var activitiesCreated = 0
 
     @State private var showLogoutConfirmation = false
     @State private var showEditProfile = false
@@ -68,6 +72,7 @@ struct ProfileView: View {
                 ScrollView {
                     VStack(spacing: 22) {
                         pointsHeader
+                        statsSection
                         achievementsSection
                         appearanceSection
                         glassinessSection
@@ -216,6 +221,42 @@ struct ProfileView: View {
                     )
             }
         }
+    }
+
+    // MARK: Stats
+
+    private var statsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Stats", systemImage: "chart.bar.fill")
+                .font(.title3.bold())
+
+            GlassCard {
+                HStack(spacing: 0) {
+                    statTile(value: "\(streak)", label: "Day Streak", icon: "flame.fill")
+                    Divider().frame(height: 44)
+                    statTile(value: "\(longestStreak)", label: "Best Streak", icon: "trophy.fill")
+                    Divider().frame(height: 44)
+                    statTile(value: "\(lifetimeCompletedActivities)", label: "Completed", icon: "checkmark.seal.fill")
+                    Divider().frame(height: 44)
+                    statTile(value: "\(activitiesCreated)", label: "Created", icon: "plus.circle.fill")
+                }
+            }
+        }
+    }
+
+    private func statTile(value: String, label: String, icon: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(customization.accentColor.color)
+            Text(value)
+                .font(.headline)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: Achievements
@@ -397,16 +438,33 @@ struct ProfileView: View {
                 .font(.title3.bold())
 
             GlassCard {
-                Button {
-                    showLogoutConfirmation = true
-                } label: {
-                    HStack {
-                        Image(systemName: "rectangle.portrait.and.arrow.right")
-                        Text("Log Out")
-                            .fontWeight(.semibold)
-                        Spacer()
+                VStack(spacing: 0) {
+                    NavigationLink(destination: MyQuestsView()) {
+                        HStack {
+                            Image(systemName: "checkmark.seal.fill")
+                            Text("My Quests")
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .foregroundStyle(.primary)
                     }
-                    .foregroundStyle(.red)
+
+                    Divider().opacity(0.3).padding(.vertical, 12)
+
+                    Button {
+                        showLogoutConfirmation = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "rectangle.portrait.and.arrow.right")
+                            Text("Log Out")
+                                .fontWeight(.semibold)
+                            Spacer()
+                        }
+                        .foregroundStyle(.red)
+                    }
                 }
             }
         }
@@ -432,6 +490,10 @@ struct ProfileView: View {
             username = data["username"] as? String ?? ""
             points = data["points"] as? Int ?? 0
             profileImageURL = data["profileImageURL"] as? String
+            streak = data["streak"] as? Int ?? 0
+            longestStreak = data["longestStreak"] as? Int ?? 0
+            lifetimeCompletedActivities = data["lifetimeCompletedActivities"] as? Int ?? 0
+            activitiesCreated = data["activitiesCreated"] as? Int ?? 0
         }
     }
 }

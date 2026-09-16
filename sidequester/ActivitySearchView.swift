@@ -45,15 +45,15 @@ struct ActivitySearchView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
 
-                    HStack {
+                    HStack(spacing: 10) {
                         TextField("Search activities...", text: $searchText)
                             .textFieldStyle(.roundedBorder)
 
                         Button {
                             showingAddSheet = true
                         } label: {
-                            Image(systemName: "plus")
-                                .font(.title2)
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 30))
                         }
 
                         Button {
@@ -78,48 +78,16 @@ struct ActivitySearchView: View {
                         .foregroundStyle(importSucceeded ? .green : .red)
                     }
 
-                    Group {
-                        Text("Age Range")
-                            .font(.headline)
-                        Picker("Age Range", selection: $selectedAge) {
-                            ForEach(ageOptions, id: \.self) { Text($0) }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            filterChip(title: "Age", selection: $selectedAge, options: ageOptions)
+                            filterChip(title: "Effort", selection: $selectedEffort, options: effortOptions)
+                            filterChip(title: "Time", selection: $selectedTime, options: timeOptions)
+                            filterChip(title: "Cost", selection: $selectedCost, options: costOptions)
+                            filterChip(title: "Shelter", selection: $selectedShelter, options: shelterOptions)
+                            filterChip(title: "Completed", selection: $selectedCompleted, options: completedOptions)
                         }
-                        .pickerStyle(.menu)
-
-                        Text("Effort Level")
-                            .font(.headline)
-                        Picker("Effort Level", selection: $selectedEffort) {
-                            ForEach(effortOptions, id: \.self) { Text($0) }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Time Required")
-                            .font(.headline)
-                        Picker("Time Required", selection: $selectedTime) {
-                            ForEach(timeOptions, id: \.self) { Text($0) }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Cost")
-                            .font(.headline)
-                        Picker("Cost", selection: $selectedCost) {
-                            ForEach(costOptions, id: \.self) { Text($0) }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Shelter")
-                            .font(.headline)
-                        Picker("Shelter", selection: $selectedShelter) {
-                            ForEach(shelterOptions, id: \.self) { Text($0) }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Completed By")
-                            .font(.headline)
-                        Picker("Completed By", selection: $selectedCompleted) {
-                            ForEach(completedOptions, id: \.self) { Text($0) }
-                        }
-                        .pickerStyle(.menu)
+                        .padding(.vertical, 2)
                     }
 
                     ForEach(filteredActivities) { activity in
@@ -180,6 +148,36 @@ struct ActivitySearchView: View {
                     Text("Delete '\(activity.name)' from Firestore?")
                 }
             }
+        }
+    }
+
+    /// Compact pill-shaped filter control — a Menu-backed Picker so the
+    /// whole filter row fits on one horizontally-scrollable line instead of
+    /// six stacked header+picker blocks.
+    private func filterChip(title: String, selection: Binding<String>, options: [String]) -> some View {
+        let isActive = selection.wrappedValue != "Any"
+
+        return Menu {
+            Picker(title, selection: selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(option).tag(option)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(isActive ? selection.wrappedValue : title)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                isActive ? Color.accentColor.opacity(0.15) : Color(.secondarySystemBackground),
+                in: Capsule()
+            )
+            .foregroundStyle(isActive ? Color.accentColor : Color.primary)
         }
     }
 

@@ -105,6 +105,59 @@ final class AppCustomization: ObservableObject {
         backgroundOpacity = 0.10
         accentColorRaw = AppThemeColor.blue.rawValue
         appearanceRaw = AppAppearance.system.rawValue
+        scheduleSync()
+    }
+
+    // MARK: Firestore Sync
+
+    private var syncTask: Task<Void, Never>?
+
+    /// Debounced write to Firestore (900ms after the last change) — called
+    /// on every slider tick, so this avoids hammering Firestore with a
+    /// write per pixel of drag.
+    func scheduleSync() {
+        syncTask?.cancel()
+        syncTask = Task {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard !Task.isCancelled else { return }
+            syncNow()
+        }
+    }
+
+    func syncNow() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        Firestore.firestore().collection("users").document(uid).updateData([
+            "themeSettings": [
+                "glassOpacity": glassOpacity,
+                "glassBlur": glassBlur,
+                "glassCornerRadius": glassCornerRadius,
+                "glassBorderOpacity": glassBorderOpacity,
+                "glassShadowOpacity": glassShadowOpacity,
+                "backgroundOpacity": backgroundOpacity,
+                "accentColor": accentColorRaw,
+                "appearance": appearanceRaw
+            ]
+        ])
+    }
+
+    /// Pulls any previously-synced theme down from Firestore — called once
+    /// after login so the person's customization follows them to a new
+    /// device instead of resetting to defaults.
+    func loadFromFirestore() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        Firestore.firestore().collection("users").document(uid).getDocument { [weak self] snapshot, _ in
+            guard let self, let theme = snapshot?.data()?["themeSettings"] as? [String: Any] else { return }
+            DispatchQueue.main.async {
+                if let v = theme["glassOpacity"] as? Double { self.glassOpacity = v }
+                if let v = theme["glassBlur"] as? Double { self.glassBlur = v }
+                if let v = theme["glassCornerRadius"] as? Double { self.glassCornerRadius = v }
+                if let v = theme["glassBorderOpacity"] as? Double { self.glassBorderOpacity = v }
+                if let v = theme["glassShadowOpacity"] as? Double { self.glassShadowOpacity = v }
+                if let v = theme["backgroundOpacity"] as? Double { self.backgroundOpacity = v }
+                if let v = theme["accentColor"] as? String { self.accentColorRaw = v }
+                if let v = theme["appearance"] as? String { self.appearanceRaw = v }
+            }
+        }
     }
 }
 
@@ -216,6 +269,8 @@ struct GlassBackground: View {
     }
 }
 
+// MARK: - App Tabs
+
 // MARK: - Content View
 
 struct ContentView: View {
@@ -223,6 +278,7 @@ struct ContentView: View {
 
     @State private var isLoggedIn = Auth.auth().currentUser != nil
     @State private var displayName = ""
+    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
     @State private var activities: [Activity] = [
         Activity(
@@ -358,6 +414,13 @@ struct ContentView: View {
         .onAppear {
             loadActivities()
             listenToDisplayName()
+            NotificationManager.requestPermissionIfNeeded()
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { !hasSeenOnboarding },
+            set: { isShowing in hasSeenOnboarding = !isShowing }
+        )) {
+            OnboardingView(onFinish: { hasSeenOnboarding = true })
         }
     }
 
@@ -423,33 +486,31 @@ struct ContentView: View {
                     return
                 }
 
-                guard let documents = snapshot?.documents else {
+                guard let documents = snapshot?.documents, !documents.isEmpty else {
+                    // Firestore has no activities yet — keep the built-in
+                    // sample list instead of wiping the screen blank.
                     return
                 }
 
-                activities.removeAll()
-
-                for document in documents {
+                let fetched = documents.map { document -> Activity in
                     let data = document.data()
 
-                    activities.append(
-                        Activity(
-                            id: document.documentID,
-                            name: data["name"] as? String ?? "",
-                            description: data["description"] as? String ?? "",
-                            age: data["age"] as? String ?? "Any",
-                            physical: data["physical"] as? String ?? "Low",
-                            cost: data["cost"] as? String ?? "Free",
-                            shelter: data["shelter"] as? String ?? "Outdoor",
-                            time: data["time"] as? String ?? "15-30 mins",
-                            requirement: data["requirement"] as? String ?? "None",
-                            points: data["points"] as? Int ?? 10,
-                            completedCount: data["completedCount"] as? Int ?? 0
-                        )
+                    return Activity(
+                        id: document.documentID,
+                        name: data["name"] as? String ?? "",
+                        description: data["description"] as? String ?? "",
+                        age: data["age"] as? String ?? "Any",
+                        physical: data["physical"] as? String ?? "Low",
+                        cost: data["cost"] as? String ?? "Free",
+                        shelter: data["shelter"] as? String ?? "Outdoor",
+                        time: data["time"] as? String ?? "15-30 mins",
+                        requirement: data["requirement"] as? String ?? "None",
+                        points: data["points"] as? Int ?? 10,
+                        completedCount: data["completedCount"] as? Int ?? 0
                     )
                 }
 
-                activities.sort {
+                activities = fetched.sorted {
                     $0.completedCount > $1.completedCount
                 }
             }
@@ -457,13 +518,20 @@ struct ContentView: View {
 
     /// Live-updates `displayName` (the current user's username) from
     /// Firestore, so HomeView's greeting stays current — e.g. after the
-    /// person changes their username in Edit Profile.
+    /// person changes their username in Edit Profile. Also reschedules
+    /// today's streak reminder based on their real completion state.
     private func listenToDisplayName() {
         guard let uid = Auth.auth().currentUser?.uid else { return }
 
         db.collection("users").document(uid).addSnapshotListener { snapshot, error in
             guard let data = snapshot?.data() else { return }
             displayName = data["username"] as? String ?? ""
+
+            let calendar = Calendar.current
+            let lastCompletedAt = (data["lastCompletedAt"] as? Timestamp)?.dateValue()
+            let completedToday = lastCompletedAt.map { calendar.isDateInToday($0) } ?? false
+
+            NotificationManager.scheduleStreakReminderForToday(alreadyCompletedToday: completedToday)
         }
     }
 }

@@ -52,7 +52,7 @@ struct EditProfileView: View {
                                     if let data = try? await newItem?.loadTransferable(type: Data.self),
                                        let uiImage = UIImage(data: data) {
                                         previewImage = Image(uiImage: uiImage)
-                                        pendingImageData = data
+                                        pendingImageData = ImageCompression.compress(uiImage) ?? data
                                     }
                                 }
                             }
