@@ -1,7 +1,10 @@
 import SwiftUI
 import FirebaseFirestore
 
-struct ActivitySearchView: View {
+/// The old "Activities" tab's content, now embedded directly into Home
+/// instead of living in its own tab — search, filters, add/import, and the
+/// full activity list.
+struct BrowseActivitiesSection: View {
     let activities: [Activity]
 
     @State private var searchText = ""
@@ -41,57 +44,71 @@ struct ActivitySearchView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("Browse All Quests", systemImage: "magnifyingglass")
+                .font(.title3.bold())
 
-                    HStack(spacing: 10) {
-                        TextField("Search activities...", text: $searchText)
-                            .textFieldStyle(.roundedBorder)
+            HStack(spacing: 10) {
+                TextField("Search activities...", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
 
-                        Button {
-                            showingAddSheet = true
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 30))
-                        }
+                Button {
+                    showingAddSheet = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 30))
+                }
+                .accessibilityLabel("Add a new activity")
 
-                        Button {
-                            importFromSheet()
-                        } label: {
-                            if isImporting {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "square.and.arrow.down")
-                                    .font(.title2)
+                Button {
+                    importFromSheet()
+                } label: {
+                    if isImporting {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "square.and.arrow.down")
+                            .font(.title2)
+                    }
+                }
+                .disabled(isImporting)
+                .accessibilityLabel("Import activities from the Google Sheet")
+            }
+
+            if let importMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: importSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                    Text(importMessage)
+                }
+                .font(.footnote)
+                .foregroundStyle(importSucceeded ? .green : .red)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    filterChip(title: "Age", selection: $selectedAge, options: ageOptions)
+                    filterChip(title: "Effort", selection: $selectedEffort, options: effortOptions)
+                    filterChip(title: "Time", selection: $selectedTime, options: timeOptions)
+                    filterChip(title: "Cost", selection: $selectedCost, options: costOptions)
+                    filterChip(title: "Shelter", selection: $selectedShelter, options: shelterOptions)
+                    filterChip(title: "Completed", selection: $selectedCompleted, options: completedOptions)
+                }
+                .padding(.vertical, 2)
+            }
+
+            GlassCard {
+                VStack(spacing: 12) {
+                    if filteredActivities.isEmpty {
+                        Text("No activities match those filters.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    } else {
+                        ForEach(Array(filteredActivities.enumerated()), id: \.element.id) { index, activity in
+                            NavigationLink(destination: ActivityDetailView(activity: activity)) {
+                                ActivityCard(activity: activity)
                             }
-                        }
-                        .disabled(isImporting)
-                    }
-
-                    if let importMessage {
-                        HStack(spacing: 8) {
-                            Image(systemName: importSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                            Text(importMessage)
-                        }
-                        .font(.footnote)
-                        .foregroundStyle(importSucceeded ? .green : .red)
-                    }
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            filterChip(title: "Age", selection: $selectedAge, options: ageOptions)
-                            filterChip(title: "Effort", selection: $selectedEffort, options: effortOptions)
-                            filterChip(title: "Time", selection: $selectedTime, options: timeOptions)
-                            filterChip(title: "Cost", selection: $selectedCost, options: costOptions)
-                            filterChip(title: "Shelter", selection: $selectedShelter, options: shelterOptions)
-                            filterChip(title: "Completed", selection: $selectedCompleted, options: completedOptions)
-                        }
-                        .padding(.vertical, 2)
-                    }
-
-                    ForEach(filteredActivities) { activity in
-                        ActivityCard(activity: activity)
+                            .buttonStyle(.plain)
                             .contextMenu {
                                 Button {
                                     activityToEdit = activity
@@ -105,48 +122,51 @@ struct ActivitySearchView: View {
                                     Label("Delete Activity", systemImage: "trash")
                                 }
                             }
-                    }
-                }
-                .padding()
-            }
-            .navigationTitle("Activities")
-            .sheet(isPresented: $showingAddSheet) {
-                AddActivityView()
-            }
-            .sheet(isPresented: Binding(
-                get: { activityToEdit != nil },
-                set: { if !$0 { activityToEdit = nil } }
-            )) {
-                if let activity = activityToEdit {
-                    EditActivityView(activity: activity)
-                }
-            }
-            .confirmationDialog(
-                "Delete Activity?",
-                isPresented: Binding(
-                    get: { activityToDelete != nil },
-                    set: { if !$0 { activityToDelete = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Delete", role: .destructive) {
-                    if let activity = activityToDelete {
-                        db.collection("activities").document(activity.id).delete { error in
-                            if let error = error {
-                                print("Failed to delete activity: \(error.localizedDescription)")
+
+                            if index != filteredActivities.count - 1 {
+                                Divider().opacity(0.3)
                             }
                         }
                     }
-                    activityToDelete = nil
                 }
-
-                Button("Cancel", role: .cancel) {
-                    activityToDelete = nil
-                }
-            } message: {
+            }
+        }
+        .sheet(isPresented: $showingAddSheet) {
+            AddActivityView()
+        }
+        .sheet(isPresented: Binding(
+            get: { activityToEdit != nil },
+            set: { if !$0 { activityToEdit = nil } }
+        )) {
+            if let activity = activityToEdit {
+                EditActivityView(activity: activity)
+            }
+        }
+        .confirmationDialog(
+            "Delete Activity?",
+            isPresented: Binding(
+                get: { activityToDelete != nil },
+                set: { if !$0 { activityToDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
                 if let activity = activityToDelete {
-                    Text("Delete '\(activity.name)' from Firestore?")
+                    db.collection("activities").document(activity.id).delete { error in
+                        if let error = error {
+                            print("Failed to delete activity: \(error.localizedDescription)")
+                        }
+                    }
                 }
+                activityToDelete = nil
+            }
+
+            Button("Cancel", role: .cancel) {
+                activityToDelete = nil
+            }
+        } message: {
+            if let activity = activityToDelete {
+                Text("Delete '\(activity.name)' from Firestore?")
             }
         }
     }

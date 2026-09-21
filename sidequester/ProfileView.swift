@@ -90,6 +90,7 @@ struct ProfileView: View {
                         currentUsername: username,
                         currentImageURL: profileImageURL
                     )
+                    .environmentObject(customization)
                 }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
@@ -443,6 +444,21 @@ struct ProfileView: View {
                         HStack {
                             Image(systemName: "checkmark.seal.fill")
                             Text("My Quests")
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .foregroundStyle(.primary)
+                    }
+
+                    Divider().opacity(0.3).padding(.vertical, 12)
+
+                    NavigationLink(destination: EditPreferencesView()) {
+                        HStack {
+                            Image(systemName: "slider.horizontal.3")
+                            Text("Preferences")
                                 .fontWeight(.semibold)
                             Spacer()
                             Image(systemName: "chevron.right")

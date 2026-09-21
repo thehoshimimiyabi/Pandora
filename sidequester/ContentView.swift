@@ -278,6 +278,7 @@ struct ContentView: View {
 
     @State private var isLoggedIn = Auth.auth().currentUser != nil
     @State private var displayName = ""
+    @State private var needsPreferencesSetup = false
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
     @State private var activities: [Activity] = [
@@ -415,47 +416,49 @@ struct ContentView: View {
             loadActivities()
             listenToDisplayName()
             NotificationManager.requestPermissionIfNeeded()
+            refreshActivitiesFromSheet()
         }
         .fullScreenCover(isPresented: Binding(
             get: { !hasSeenOnboarding },
             set: { isShowing in hasSeenOnboarding = !isShowing }
         )) {
             OnboardingView(onFinish: { hasSeenOnboarding = true })
+                .environmentObject(customization)
         }
     }
 
     @ViewBuilder
     private var loggedInContent: some View {
         if isLoggedIn {
-            TabView {
-                HomeView(activities: activities, displayName: displayName)
+            if needsPreferencesSetup {
+                PreferencesEditorView(onFinish: { needsPreferencesSetup = false })
+                    .environmentObject(customization)
+            } else {
+                TabView {
+                    HomeView(activities: activities, displayName: displayName)
+                        .tabItem {
+                            Label("Home", systemImage: "house.fill")
+                        }
+
+                    ProfileView(
+                        onLogout: {
+                            try? Auth.auth().signOut()
+                            isLoggedIn = false
+                        }
+                    )
                     .tabItem {
-                        Label("Home", systemImage: "house.fill")
+                        Label("Profile", systemImage: "person.crop.circle.fill")
                     }
 
-                ProfileView(
-                    onLogout: {
-                        try? Auth.auth().signOut()
-                        isLoggedIn = false
-                    }
-                )
-                .tabItem {
-                    Label("Profile", systemImage: "person.crop.circle.fill")
+                    LeaderboardView()
+                        .tabItem {
+                            Label("Friends", systemImage: "person.3.fill")
+                        }
                 }
-
-                LeaderboardView()
-                    .tabItem {
-                        Label("Friends", systemImage: "person.3.fill")
-                    }
-
-                ActivitySearchView(activities: activities)
-                    .tabItem {
-                        Label("Activities", systemImage: "magnifyingglass")
-                    }
+                .toolbarBackground(.ultraThinMaterial, for: .tabBar)
+                .toolbarBackground(.visible, for: .tabBar)
+                .tint(customization.accentColor.color)
             }
-            .toolbarBackground(.ultraThinMaterial, for: .tabBar)
-            .toolbarBackground(.visible, for: .tabBar)
-            .tint(customization.accentColor.color)
         } else {
             LoginView(onLoginSuccess: {
                 isLoggedIn = true
@@ -516,6 +519,21 @@ struct ContentView: View {
             }
     }
 
+    /// Silently re-imports from the published Google Sheet on every launch,
+    /// so activities added/edited there show up automatically — no more
+    /// needing to remember to tap an import button. Since `loadActivities()`
+    /// above is a live Firestore listener, any changes this writes will
+    /// flow straight through to the UI on their own. Failures are ignored
+    /// on purpose: if the sheet is briefly unreachable, the app should just
+    /// carry on with whatever's already in Firestore.
+    private func refreshActivitiesFromSheet() {
+        Task {
+            _ = try? await SheetImporter.importIntoFirestore(
+                fromPublishedSheetURL: SheetImporter.sidequesterSheetURL
+            )
+        }
+    }
+
     /// Live-updates `displayName` (the current user's username) from
     /// Firestore, so HomeView's greeting stays current — e.g. after the
     /// person changes their username in Edit Profile. Also reschedules
@@ -526,6 +544,13 @@ struct ContentView: View {
         db.collection("users").document(uid).addSnapshotListener { snapshot, error in
             guard let data = snapshot?.data() else { return }
             displayName = data["username"] as? String ?? ""
+
+            // Existing accounts from before this feature won't have a
+            // "preferencesSet" field at all — default that to true so we
+            // don't retroactively nag people who already have the app.
+            // Brand-new signups explicitly write `false`, so this only
+            // triggers for people who haven't gone through it yet.
+            needsPreferencesSetup = (data["preferencesSet"] as? Bool) == false
 
             let calendar = Calendar.current
             let lastCompletedAt = (data["lastCompletedAt"] as? Timestamp)?.dateValue()
@@ -776,6 +801,7 @@ struct LoginView: View {
         .sheet(isPresented: $showForgotPassword) {
             NavigationStack {
                 ForgotPasswordView()
+                    .environmentObject(customization)
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -891,7 +917,8 @@ struct LoginView: View {
                         "lifetimeCompletedActivities": 0,
                         "activitiesCreated": 0,
                         "completedActivities": [],
-                        "createdActivities": []
+                        "createdActivities": [],
+                        "preferencesSet": false
                     ]) { error in
                         isLoading = false
 

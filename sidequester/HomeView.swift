@@ -7,8 +7,21 @@ struct HomeView: View {
     let activities: [Activity]
     let displayName: String
 
+    @State private var preferences = ActivityPreferences()
+
     private var featured: Activity? { activities.max { $0.points < $1.points } }
-    private var recommended: [Activity] { Array(activities.shuffled().prefix(3)) }
+
+    /// Shuffled first, then stably sorted by how well each activity matches
+    /// the person's stated preferences — so results stay varied day to day
+    /// while still favoring what they said they're into.
+    private var recommended: [Activity] {
+        Array(
+            activities
+                .shuffled()
+                .sorted { preferences.matchScore(for: $0) > preferences.matchScore(for: $1) }
+                .prefix(3)
+        )
+    }
 
     // MARK: Feed state
 
@@ -45,6 +58,7 @@ struct HomeView: View {
                         feedSection
                         activitySection("Recommended For You", icon: "sparkles", activities: recommended)
                         activitySection("Trending", icon: "flame.fill", activities: activities.sorted { $0.points > $1.points }.prefix(5).map { $0 })
+                        BrowseActivitiesSection(activities: activities)
                     }
                     .padding()
                 }
@@ -57,6 +71,7 @@ struct HomeView: View {
             .onAppear {
                 listenToFeed()
                 listenToMyFriends()
+                listenToPreferences()
             }
             .sheet(item: $activeCommentsPost) { post in
                 NavigationStack {
@@ -330,6 +345,16 @@ struct HomeView: View {
         db.collection("users").document(uid).collection("friends")
             .addSnapshotListener { snapshot, _ in
                 myFriendIds = Set(snapshot?.documents.map { $0.documentID } ?? [])
+            }
+    }
+
+    /// Live-updates `preferences` from Firestore so "Recommended For You"
+    /// stays in sync if the person edits them from Profile mid-session.
+    private func listenToPreferences() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        db.collection("users").document(uid)
+            .addSnapshotListener { snapshot, _ in
+                preferences = ActivityPreferences.from(firestoreData: snapshot?.data())
             }
     }
 

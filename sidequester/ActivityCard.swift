@@ -7,35 +7,33 @@ struct ActivityCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(activity.name)
                 .font(.headline)
+                .foregroundStyle(.primary)
 
             HStack(spacing: 6) {
                 Image(systemName: "person.2.fill")
-                    .foregroundStyle(.secondary)
-
                 Text("\(activity.completedCount) completed")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
+            .foregroundStyle(.primary.opacity(0.72))
 
-            HStack {
+            HStack(spacing: 14) {
                 Label("\(activity.points) pts", systemImage: "star.fill")
                 Label(activity.time, systemImage: "clock")
                 Label(activity.cost, systemImage: "dollarsign.circle")
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.primary.opacity(0.72))
 
-            HStack {
+            HStack(spacing: 6) {
                 Text(activity.physical)
                 Text("•")
                 Text(activity.shelter)
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.primary.opacity(0.6))
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.green.opacity(0.15))
-        .cornerRadius(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
