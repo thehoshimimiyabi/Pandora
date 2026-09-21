@@ -628,7 +628,7 @@ struct LoginView: View {
                             y: 8
                         )
 
-                    Text("Sidequester")
+                    Text("Pandora")
                         .font(.system(size: 34, weight: .bold))
 
                     Text("Touch grass. Earn points. Have fun.")

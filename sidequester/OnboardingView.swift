@@ -12,7 +12,7 @@ struct OnboardingView: View {
     private let pages: [Page] = [
         Page(
             icon: "figure.walk.motion",
-            title: "Welcome to Sidequester",
+            title: "Welcome to Pandora",
             description: "Turn boring afternoons into bite-sized real-world quests."
         ),
         Page(
