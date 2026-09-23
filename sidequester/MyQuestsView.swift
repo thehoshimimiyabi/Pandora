@@ -1,158 +1,175 @@
+//
+//  MyQuestsView.swift
+//  Pandora / sidequester
+//
+
 import SwiftUI
-import FirebaseAuth
 import FirebaseFirestore
+import FirebaseAuth
 
-/// The signed-in user's own completion history — every post they've made,
-/// newest first. Reachable from Profile ("My Quests").
 struct MyQuestsView: View {
+    var allActivities: [Activity] = []
+    
     @EnvironmentObject private var customization: AppCustomization
-
-    @State private var posts: [Post] = []
-    @State private var isLoading = true
-    @State private var errorMessage: String?
-
+    @State private var selectedTab = 0 // 0: Bookmarked, 1: Completed
+    @State private var completedIDs: [String] = []
+    @State private var bookmarkedIDs: [String] = []
+    @State private var activityToComplete: Activity? = nil
+    
     private let db = Firestore.firestore()
-
+    
+    private var completedActivities: [Activity] {
+        allActivities.filter { completedIDs.contains($0.id) }
+    }
+    
+    private var bookmarkedActivities: [Activity] {
+        allActivities.filter { bookmarkedIDs.contains($0.id) }
+    }
+    
     var body: some View {
-        ZStack {
-            GlassBackground(
-                topGlowOffset: CGPoint(x: 160, y: -300),
-                bottomGlowOffset: CGPoint(x: -170, y: 320)
-            )
-
-            ScrollView {
-                VStack(spacing: 16) {
-                    if let errorMessage {
-                        GlassCard {
-                            Text(errorMessage)
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
-                    } else if isLoading {
-                        GlassCard {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                Spacer()
-                            }
-                        }
-                    } else if posts.isEmpty {
-                        GlassCard {
-                            VStack(spacing: 8) {
-                                Image(systemName: "checkmark.seal")
-                                    .font(.system(size: 32))
-                                    .foregroundStyle(.secondary)
-                                Text("You haven't completed a quest yet — go find one on Home!")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
+        NavigationStack {
+            VStack(spacing: 16) {
+                // Segmented Picker
+                Picker("Quests Mode", selection: $selectedTab) {
+                    Text("Saved Quests (\(bookmarkedActivities.count))").tag(0)
+                    Text("Completed (\(completedActivities.count))").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 20)
+                
+                if selectedTab == 0 {
+                    // BOOKMARKED QUESTS
+                    if bookmarkedActivities.isEmpty {
+                        emptyView(
+                            icon: "bookmark.slash",
+                            title: "No Saved Quests",
+                            message: "Tap the bookmark icon on any sidequest on the Home screen to save it for later!"
+                        )
                     } else {
-                        ForEach(posts) { post in
-                            questRow(post)
+                        List(bookmarkedActivities) { act in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(act.name)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text("+\(act.points) pts")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.purple)
+                                }
+                                
+                                HStack(spacing: 10) {
+                                    Label(act.time, systemImage: "clock")
+                                    Label(act.shelter, systemImage: "house")
+                                    Label(act.cost, systemImage: "dollarsign.circle")
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                
+                                HStack {
+                                    Button {
+                                        activityToComplete = act
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "checkmark.circle.fill")
+                                            Text("Log Completion")
+                                        }
+                                        .font(.footnote.bold())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 6)
+                                        .background(Color.blue, in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    
+                                    Spacer()
+                                    
+                                    Button {
+                                        removeBookmark(act.id)
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.footnote)
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.top, 4)
+                            }
+                            .padding(.vertical, 4)
                         }
+                        .listStyle(.insetGrouped)
                     }
-                }
-                .padding()
-            }
-        }
-        .navigationTitle("My Quests")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear { listenToMyQuests() }
-    }
-
-    private func questRow(_ post: Post) -> some View {
-        GlassCard {
-            HStack(spacing: 14) {
-                if let url = URL(string: post.photoURL) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            Color.gray.opacity(0.15)
+                } else {
+                    // COMPLETED QUESTS
+                    if completedActivities.isEmpty {
+                        emptyView(
+                            icon: "trophy",
+                            title: "No Completed Quests",
+                            message: "You haven't completed any sidequests yet. Go out, explore, and log your first one!"
+                        )
+                    } else {
+                        List(completedActivities) { act in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(act.name)
+                                        .font(.headline)
+                                    Text("Completed • +\(act.points) Points Earned")
+                                        .font(.caption)
+                                        .foregroundStyle(.green)
+                                }
+                                Spacer()
+                                Image(systemName: "checkmark.seal.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.green)
+                            }
+                            .padding(.vertical, 4)
                         }
+                        .listStyle(.insetGrouped)
                     }
-                    .frame(width: 56, height: 56)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(post.activityName)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(2)
-
-                    Text(post.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 12) {
-                        Label("\(post.kudosCount)", systemImage: "hands.clap")
-                        Label("\(post.commentCount)", systemImage: "bubble.right")
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                Text("+\(post.points)")
-                    .font(.caption.weight(.bold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(customization.accentColor.color.opacity(0.15), in: Capsule())
+            }
+            .navigationTitle("My Quests")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                fetchUserData()
+            }
+            .sheet(item: $activityToComplete) { act in
+                ActivityCompletionSheet(activity: act)
+                    .environmentObject(customization)
             }
         }
     }
-
-    private func listenToMyQuests() {
-        guard let uid = Auth.auth().currentUser?.uid else {
-            isLoading = false
-            errorMessage = "You need to be signed in to see your quest history."
-            return
+    
+    private func fetchUserData() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        
+        db.collection("users").document(uid).addSnapshotListener { snapshot, _ in
+            guard let data = snapshot?.data() else { return }
+            self.completedIDs = data["completedActivities"] as? [String] ?? []
+            self.bookmarkedIDs = data["bookmarkedActivities"] as? [String] ?? []
         }
-
-        db.collection("posts")
-            .whereField("userId", isEqualTo: uid)
-            .order(by: "createdAt", descending: true)
-            .limit(to: 100)
-            .addSnapshotListener { snapshot, error in
-                isLoading = false
-
-                if let error = error {
-                    errorMessage = error.localizedDescription
-                    return
-                }
-
-                errorMessage = nil
-                posts = snapshot?.documents.compactMap { doc -> Post? in
-                    let data = doc.data()
-                    guard let userId = data["userId"] as? String,
-                          let username = data["username"] as? String,
-                          let activityId = data["activityId"] as? String,
-                          let activityName = data["activityName"] as? String,
-                          let photoURL = data["photoURL"] as? String else {
-                        return nil
-                    }
-
-                    let timestamp = data["createdAt"] as? Timestamp
-
-                    return Post(
-                        id: doc.documentID,
-                        userId: userId,
-                        username: username,
-                        profileImageURL: data["profileImageURL"] as? String,
-                        activityId: activityId,
-                        activityName: activityName,
-                        photoURL: photoURL,
-                        points: data["points"] as? Int ?? 0,
-                        createdAt: timestamp?.dateValue() ?? Date(),
-                        kudosCount: data["kudosCount"] as? Int ?? 0,
-                        commentCount: data["commentCount"] as? Int ?? 0
-                    )
-                } ?? []
-            }
+    }
+    
+    private func removeBookmark(_ id: String) {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        db.collection("users").document(uid).updateData([
+            "bookmarkedActivities": FieldValue.arrayRemove([id])
+        ])
+    }
+    
+    private func emptyView(icon: String, title: String, message: String) -> some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: icon)
+                .font(.system(size: 48))
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+            Spacer()
+        }
     }
 }

@@ -1,475 +1,1026 @@
+//
+//  HomeView.swift
+//  Pandora / sidequester
+//
+
 import SwiftUI
-import FirebaseAuth
+import PhotosUI
 import FirebaseFirestore
+import FirebaseAuth
+
+// MARK: - Liquid Glass View Modifier
+
+struct LiquidGlassModifier: ViewModifier {
+    @EnvironmentObject private var customization: AppCustomization
+    var cornerRadius: CGFloat? = nil
+
+    private var effectiveRadius: CGFloat {
+        cornerRadius ?? CGFloat(customization.glassCornerRadius)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: effectiveRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .opacity(customization.glassOpacity)
+
+                    RoundedRectangle(cornerRadius: effectiveRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.22),
+                                    Color.white.opacity(0.04),
+                                    customization.accentColor.color.opacity(0.08)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                }
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: effectiveRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(customization.glassBorderOpacity + 0.35),
+                                Color.white.opacity(customization.glassBorderOpacity * 0.4),
+                                customization.accentColor.color.opacity(0.3)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.2
+                    )
+            }
+            .shadow(
+                color: customization.accentColor.color.opacity(customization.glassShadowOpacity * 0.8),
+                radius: customization.glassBlur,
+                y: customization.glassBlur / 2
+            )
+    }
+}
+
+extension View {
+    func liquidGlass(cornerRadius: CGFloat? = nil) -> some View {
+        modifier(LiquidGlassModifier(cornerRadius: cornerRadius))
+    }
+}
+
+// MARK: - Main Home View
 
 struct HomeView: View {
-    @EnvironmentObject private var customization: AppCustomization
     let activities: [Activity]
     let displayName: String
-
-    @State private var preferences = ActivityPreferences()
-
-    private var featured: Activity? { activities.max { $0.points < $1.points } }
-
-    /// Shuffled first, then stably sorted by how well each activity matches
-    /// the person's stated preferences — so results stay varied day to day
-    /// while still favoring what they said they're into.
-    private var recommended: [Activity] {
-        Array(
-            activities
-                .shuffled()
-                .sorted { preferences.matchScore(for: $0) > preferences.matchScore(for: $1) }
-                .prefix(3)
-        )
-    }
-
-    // MARK: Feed state
-
-    @State private var posts: [Post] = []
-    @State private var kudosedPostIds: Set<String> = []
-    @State private var isFeedLoading = true
-    @State private var feedErrorMessage: String?
-    @State private var activeCommentsPost: Post?
-    @State private var postToReport: Post?
-    @State private var myFriendIds: Set<String> = []
-    @State private var feedScope: FeedScope = .everyone
-
-    enum FeedScope: String, CaseIterable {
-        case everyone = "Everyone"
-        case friends = "Friends"
-    }
-
-    private var visiblePosts: [Post] {
-        guard feedScope == .friends, let myUid = Auth.auth().currentUser?.uid else { return posts }
-        return posts.filter { $0.userId == myUid || myFriendIds.contains($0.userId) }
-    }
-
+    
+    @EnvironmentObject private var customization: AppCustomization
+    
+    // Search Bar State
+    @State private var searchText = ""
+    @State private var isSearching = false
+    @FocusState private var isSearchFocused: Bool
+    
+    // Sheets & Navigation
+    @State private var selectedCategoryTitle: String? = nil
+    @State private var selectedCategoryActivities: [Activity] = []
+    @State private var showCategorySheet = false
+    @State private var showStatsSheet = false
+    @State private var showCustomizationSheet = false
+    @State private var activityToComplete: Activity? = nil
+    
+    // Bookmarking State
+    @State private var bookmarkedIDs: Set<String> = []
+    
+    // Friend Completed IDs from Firestore
+    @State private var friendCompletedActivityIDs: Set<String> = []
+    
     private let db = Firestore.firestore()
-
+    
+    // Top Quest (Highest points from the real activities pool)
+    private var topQuest: Activity? {
+        activities.max(by: { $0.points < $1.points }) ?? activities.first
+    }
+    
+    // Real Activities: Prioritizes activities friends have completed, then most popular
+    private var prioritizedActivities: [Activity] {
+        activities.sorted { act1, act2 in
+            let act1FriendCompleted = friendCompletedActivityIDs.contains(act1.id)
+            let act2FriendCompleted = friendCompletedActivityIDs.contains(act2.id)
+            
+            if act1FriendCompleted != act2FriendCompleted {
+                return act1FriendCompleted
+            }
+            return act1.completedCount > act2.completedCount
+        }
+    }
+    
     var body: some View {
-        NavigationStack {
-            ZStack {
-                GlassBackground(topGlowOffset: CGPoint(x: -180, y: -260), bottomGlowOffset: CGPoint(x: 160, y: 340))
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        hero
-                        if let featured { featuredCard(featured) }
-                        stats
-                        feedSection
-                        activitySection("Recommended For You", icon: "sparkles", activities: recommended)
-                        activitySection("Trending", icon: "flame.fill", activities: activities.sorted { $0.points > $1.points }.prefix(5).map { $0 })
-                        BrowseActivitiesSection(activities: activities)
+        ZStack(alignment: .top) {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 22) {
+                    Spacer().frame(height: 70)
+                    
+                    // 1. WELCOME BACK BAR
+                    Button {
+                        showStatsSheet = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [customization.accentColor.color, .purple],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 46, height: 46)
+                                Text("⚡️")
+                                    .font(.headline)
+                            }
+                            .overlay(Circle().strokeBorder(Color.white.opacity(0.4), lineWidth: 1))
+                            
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Welcome back, \(displayName.isEmpty ? "Adventurer" : displayName)")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(.primary)
+                                
+                                Text("Tap to view quest stats & streak")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .liquidGlass(cornerRadius: 18)
                     }
-                    .padding()
-                }
-                .refreshable {
-                    listenToFeed()
-                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 20)
+                    
+                    // 2. CENTERED VIBE BUBBLES
+                    VStack(alignment: .center, spacing: 14) {
+                        Text("EXPLORE VIBES")
+                            .font(.caption2.weight(.heavy))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        
+                        HStack(spacing: 24) {
+                            bubbleButton(title: "Outdoors", icon: "sun.max.fill", color: .orange) {
+                                openCategory(title: "Outdoors", filter: {
+                                    $0.shelter.localizedCaseInsensitiveContains("Outdoor") || $0.shelter.localizedCaseInsensitiveContains("Both")
+                                })
+                            }
+                            
+                            bubbleButton(title: "Free", icon: "sparkles", color: .green) {
+                                openCategory(title: "Free Quests", filter: {
+                                    $0.cost.localizedCaseInsensitiveContains("Free")
+                                })
+                            }
+                            
+                            bubbleButton(title: "Quick", icon: "bolt.fill", color: .blue) {
+                                openCategory(title: "Quick (<30m)", filter: {
+                                    $0.time.contains("15") || $0.time.contains("30")
+                                })
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .padding(.horizontal, 20)
+                    
+                    // 3. TOP QUEST CARD
+                    if let top = topQuest {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("FEATURED QUEST")
+                                    .font(.caption2.weight(.heavy))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("🔥 Top XP")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(.red)
+                            }
+                            .padding(.horizontal, 22)
+                            
+                            Button {
+                                activityToComplete = top
+                            } label: {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack {
+                                        Text(top.shelter.uppercased())
+                                            .font(.caption2.weight(.heavy))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 4)
+                                            .background(customization.accentColor.color.opacity(0.18))
+                                            .foregroundStyle(customization.accentColor.color)
+                                            .clipShape(Capsule())
+                                        
+                                        Spacer()
+                                        
+                                        Text("+\(top.points) PTS")
+                                            .font(.caption.weight(.heavy))
+                                            .foregroundStyle(.purple)
+                                    }
+                                    
+                                    Text(top.name)
+                                        .font(.title3.weight(.bold))
+                                        .foregroundStyle(.primary)
+                                        .multilineTextAlignment(.leading)
+                                    
+                                    HStack(spacing: 14) {
+                                        Label(top.time, systemImage: "clock")
+                                        Label(top.physical, systemImage: "figure.walk")
+                                        Label(top.cost, systemImage: "dollarsign.circle")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    
+                                    HStack {
+                                        Text("Tap to log & complete")
+                                            .font(.footnote.weight(.semibold))
+                                            .foregroundStyle(customization.accentColor.color)
+                                        Spacer()
+                                        Image(systemName: "arrow.right.circle.fill")
+                                            .foregroundStyle(customization.accentColor.color)
+                                    }
+                                }
+                                .padding(18)
+                                .liquidGlass(cornerRadius: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 20)
+                        }
+                    }
+                    
+                    // 4. REAL ACTIVITIES LIST (Prioritizing Friend & Community Activities)
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Text("SIDEQUESTS FOR YOU")
+                                .font(.caption2.weight(.heavy))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("\(prioritizedActivities.count) Available")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 22)
+                        
+                        if prioritizedActivities.isEmpty {
+                            Text("No quests currently available.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 24)
+                        } else {
+                            ForEach(prioritizedActivities) { act in
+                                realActivityCard(act: act)
+                            }
+                        }
+                    }
+                    
+                    Spacer().frame(height: 50)
                 }
             }
-            .navigationTitle("Sidequester")
             .onAppear {
-                listenToFeed()
-                listenToMyFriends()
-                listenToPreferences()
+                fetchUserDataAndBookmarks()
+                listenToFriendsActivity()
             }
-            .sheet(item: $activeCommentsPost) { post in
-                NavigationStack {
-                    CommentsView(post: post)
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-            }
-            .confirmationDialog(
-                "Report this post?",
-                isPresented: Binding(
-                    get: { postToReport != nil },
-                    set: { if !$0 { postToReport = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Report", role: .destructive) {
-                    if let postToReport {
-                        reportPost(postToReport)
+            
+            // 5. TOP SEARCH BAR & MODAL OVERLAY
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        
+                        TextField("Search all activities...", text: $searchText)
+                            .focused($isSearchFocused)
+                            .onTapGesture {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                    isSearching = true
+                                }
+                            }
+                        
+                        if !searchText.isEmpty {
+                            Button {
+                                searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
-                    postToReport = nil
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .liquidGlass(cornerRadius: 16)
+                    
+                    Button {
+                        showCustomizationSheet = true
+                    } label: {
+                        Image(systemName: "paintpalette.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(customization.accentColor.color)
+                            .padding(12)
+                            .liquidGlass(cornerRadius: 16)
+                    }
+                    
+                    if isSearching {
+                        Button("Done") {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                isSearching = false
+                                isSearchFocused = false
+                                searchText = ""
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(customization.accentColor.color)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    }
                 }
-                Button("Cancel", role: .cancel) {
-                    postToReport = nil
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+                .background(.ultraThinMaterial.opacity(0.85))
+                
+                if isSearching {
+                    HomeSearchOverlay(
+                        activities: activities,
+                        searchText: searchText,
+                        onSelect: { selected in
+                            withAnimation {
+                                isSearching = false
+                                isSearchFocused = false
+                            }
+                            activityToComplete = selected
+                        }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-            } message: {
-                Text("We'll take a look — this won't notify the person who posted it.")
             }
         }
+        .sheet(isPresented: $showCategorySheet) {
+            HomeCategorySheet(
+                title: selectedCategoryTitle ?? "Activities",
+                activities: selectedCategoryActivities,
+                onSelect: { chosen in
+                    showCategorySheet = false
+                    activityToComplete = chosen
+                }
+            )
+            .environmentObject(customization)
+        }
+        .sheet(isPresented: $showStatsSheet) {
+            HomeStatsSheet(displayName: displayName, activitiesCount: activities.count)
+                .environmentObject(customization)
+        }
+        .sheet(isPresented: $showCustomizationSheet) {
+            HomeThemeCustomizationSheet()
+                .environmentObject(customization)
+        }
+        .sheet(item: $activityToComplete) { activity in
+            ActivityCompletionSheet(activity: activity)
+                .environmentObject(customization)
+        }
     }
-
-    private var hero: some View {
-        GlassCard {
+    
+    // MARK: - Real Activity Card with Working Bookmark & Complete Actions
+    
+    private func realActivityCard(act: Activity) -> some View {
+        let isFriendFavorite = friendCompletedActivityIDs.contains(act.id)
+        let isBookmarked = bookmarkedIDs.contains(act.id)
+        
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Welcome back").foregroundStyle(.secondary)
-                    Text("Hi, \(displayName.isEmpty ? "Explorer" : displayName)").font(.title2.bold())
-                    Text("Ready for a sidequest?").font(.subheadline).foregroundStyle(.secondary)
+                if isFriendFavorite {
+                    HStack(spacing: 5) {
+                        Image(systemName: "person.2.fill")
+                        Text("Friend Completed")
+                    }
+                    .font(.caption2.bold())
+                    .foregroundStyle(.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.blue.opacity(0.12))
+                    .clipShape(Capsule())
+                } else if act.completedCount > 0 {
+                    Text("\(act.completedCount) Completed")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
                 }
+                
                 Spacer()
-                Image(systemName: "sparkles").font(.system(size: 30)).foregroundStyle(customization.accentColor.color)
+                
+                Text("+\(act.points) pts")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.purple.opacity(0.18))
+                    .foregroundStyle(.purple)
+                    .clipShape(Capsule())
+            }
+            
+            Text(act.name)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.primary)
+            
+            HStack(spacing: 12) {
+                Label(act.time, systemImage: "clock")
+                Label(act.physical, systemImage: "figure.walk")
+                Label(act.shelter, systemImage: "house")
+                Label(act.cost, systemImage: "dollarsign.circle")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            
+            HStack(spacing: 16) {
+                // COMPLETE BUTTON
+                Button {
+                    activityToComplete = act
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Log Quest")
+                    }
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        LinearGradient(
+                            colors: [customization.accentColor.color, .purple],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        in: Capsule()
+                    )
+                }
+                .buttonStyle(.plain)
+                
+                // WORKING BOOKMARK BUTTON
+                Button {
+                    toggleBookmark(for: act.id)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isBookmarked ? "bookmark.fill" : "bookmark")
+                            .foregroundStyle(isBookmarked ? customization.accentColor.color : .secondary)
+                        Text(isBookmarked ? "Saved" : "Save")
+                            .font(.caption.bold())
+                            .foregroundStyle(isBookmarked ? customization.accentColor.color : .secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color(.secondarySystemBackground), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                ShareLink(item: "Check out this quest on Pandora: \(act.name) for \(act.points) points!") {
+                    Image(systemName: "paperplane")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.top, 4)
+        }
+        .padding(18)
+        .liquidGlass(cornerRadius: 20)
+        .padding(.horizontal, 20)
+    }
+    
+    // MARK: - Firestore Listeners for Bookmarks & Friends
+    
+    private func fetchUserDataAndBookmarks() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        
+        db.collection("users").document(uid).addSnapshotListener { snapshot, _ in
+            guard let data = snapshot?.data() else { return }
+            if let saved = data["bookmarkedActivities"] as? [String] {
+                self.bookmarkedIDs = Set(saved)
             }
         }
     }
-
-    private func featuredCard(_ activity: Activity) -> some View {
-        NavigationLink(destination: ActivityDetailView(activity: activity)) {
-            GlassCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label("TOP QUEST", systemImage: "wand.and.stars").font(.caption.bold()).foregroundStyle(customization.accentColor.color)
-                    Text(activity.name).font(.title3.bold()).foregroundStyle(.primary)
-                    Text("\(activity.points) points · \(activity.time)").font(.subheadline).foregroundStyle(.secondary)
+    
+    private func listenToFriendsActivity() {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        
+        db.collection("users").document(uid).getDocument { snapshot, _ in
+            guard let data = snapshot?.data(),
+                  let friendUsernames = data["friends"] as? [String],
+                  !friendUsernames.isEmpty else { return }
+            
+            db.collection("users")
+                .whereField("username", in: friendUsernames)
+                .addSnapshotListener { querySnapshot, _ in
+                    guard let docs = querySnapshot?.documents else { return }
+                    var friendActs = Set<String>()
+                    for doc in docs {
+                        if let completed = doc.data()["completedActivities"] as? [String] {
+                            friendActs.formUnion(completed)
+                        }
+                    }
+                    self.friendCompletedActivityIDs = friendActs
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    
+    private func toggleBookmark(for activityID: String) {
+        guard let uid = Auth.auth().currentUser?.uid else { return }
+        let userRef = db.collection("users").document(uid)
+        
+        if bookmarkedIDs.contains(activityID) {
+            bookmarkedIDs.remove(activityID)
+            userRef.updateData([
+                "bookmarkedActivities": FieldValue.arrayRemove([activityID])
+            ])
+        } else {
+            bookmarkedIDs.insert(activityID)
+            userRef.updateData([
+                "bookmarkedActivities": FieldValue.arrayUnion([activityID])
+            ])
+        }
+    }
+    
+    // MARK: - Bubble Button Builder
+    
+    private func bubbleButton(title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [color.opacity(0.8), color.opacity(0.15), Color.white.opacity(0.5)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 2
+                        )
+                        .frame(width: 68, height: 68)
+                    
+                    Circle()
+                        .fill(color.opacity(0.16))
+                        .frame(width: 58, height: 58)
+                        .background(.ultraThinMaterial, in: Circle())
+                    
+                    Image(systemName: icon)
+                        .font(.title3.bold())
+                        .foregroundStyle(color)
+                }
+                .shadow(color: color.opacity(0.25), radius: 8, y: 3)
+                
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
             }
         }
         .buttonStyle(.plain)
     }
+    
+    private func openCategory(title: String, filter: (Activity) -> Bool) {
+        selectedCategoryTitle = title
+        selectedCategoryActivities = activities.filter(filter)
+        showCategorySheet = true
+    }
+}
 
-    private var stats: some View {
-        HStack(spacing: 12) {
-            stat("\(activities.count)", "Quests", "map.fill")
-            stat("\(activities.filter { $0.cost.lowercased() == "free" }.count)", "Free", "gift.fill")
-            stat("\(activities.filter { $0.shelter.lowercased().contains("outdoor") }.count)", "Outdoor", "leaf.fill")
+// MARK: - Search List Overlay
+
+private struct HomeSearchOverlay: View {
+    let activities: [Activity]
+    let searchText: String
+    let onSelect: (Activity) -> Void
+    
+    var filtered: [Activity] {
+        if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            return activities
+        }
+        return activities.filter {
+            $0.name.localizedCaseInsensitiveContains(searchText) ||
+            $0.shelter.localizedCaseInsensitiveContains(searchText) ||
+            $0.physical.localizedCaseInsensitiveContains(searchText)
         }
     }
-
-    private func stat(_ value: String, _ label: String, _ icon: String) -> some View {
-        GlassCard {
-            VStack(spacing: 5) {
-                Image(systemName: icon).foregroundStyle(customization.accentColor.color)
-                Text(value).font(.headline)
-                Text(label).font(.caption2).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    // MARK: Feed
-
-    private var feedSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Feed", systemImage: "camera.fill")
-                    .font(.title3.bold())
-
-                Spacer()
-
-                Picker("Feed scope", selection: $feedScope) {
-                    ForEach(FeedScope.allCases, id: \.self) { scope in
-                        Text(scope.rawValue).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 160)
-            }
-
-            if let feedErrorMessage {
-                GlassCard {
-                    Text(feedErrorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            } else if isFeedLoading {
-                GlassCard {
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("ALL ACTIVITIES (\(filtered.count))")
+                .font(.caption2.bold())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 22)
+                .padding(.top, 10)
+            
+            List(filtered) { act in
+                Button {
+                    onSelect(act)
+                } label: {
                     HStack {
-                        Spacer()
-                        ProgressView()
-                        Spacer()
-                    }
-                }
-            } else if visiblePosts.isEmpty {
-                GlassCard {
-                    VStack(spacing: 8) {
-                        Image(systemName: "camera.on.rectangle")
-                            .font(.system(size: 32))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(act.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            
+                            HStack(spacing: 8) {
+                                Text(act.shelter)
+                                Text("•")
+                                Text(act.time)
+                                Text("•")
+                                Text(act.cost)
+                            }
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Text(
-                            feedScope == .friends
-                                ? "None of your friends have posted yet."
-                                : "No completions yet — be the first to post one!"
-                        )
+                        }
+                        
+                        Spacer()
+                        
+                        Text("+\(act.points) pts")
+                            .font(.caption.bold())
+                            .foregroundStyle(.purple)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .listStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Category Filter Sheet
+
+private struct HomeCategorySheet: View {
+    let title: String
+    let activities: [Activity]
+    let onSelect: (Activity) -> Void
+    
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            List(activities) { act in
+                Button {
+                    onSelect(act)
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(act.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("+\(act.points) pts")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(.purple)
+                        }
+                        
+                        HStack(spacing: 12) {
+                            Label(act.time, systemImage: "clock")
+                            Label(act.physical, systemImage: "figure.walk")
+                            Label(act.cost, systemImage: "dollarsign.circle")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Player Stats Sheet
+
+private struct HomeStatsSheet: View {
+    let displayName: String
+    let activitiesCount: Int
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                VStack(spacing: 8) {
+                    Circle()
+                        .fill(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 72, height: 72)
+                        .overlay(Text("⚡️").font(.title))
+                    
+                    Text(displayName.isEmpty ? "Adventurer" : displayName)
+                        .font(.title2.bold())
+                    
+                    Text("Sidequester Explorer")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
                 }
-            } else {
-                VStack(spacing: 14) {
-                    ForEach(visiblePosts) { post in
-                        postCard(post)
-                    }
+                .padding(.top, 24)
+                
+                HStack(spacing: 16) {
+                    statBox(title: "Available Quests", value: "\(activitiesCount)")
+                    statBox(title: "Status", value: "Active 🔥")
+                }
+                .padding(.horizontal, 20)
+                
+                Spacer()
+            }
+            .navigationTitle("Your Stats")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
-
-    private func postCard(_ post: Post) -> some View {
-        GlassCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    avatar(for: post)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(post.username)
-                            .font(.subheadline.weight(.semibold))
-                        Text(post.activityName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Text("+\(post.points)")
-                        .font(.caption.weight(.bold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(customization.accentColor.color.opacity(0.15), in: Capsule())
-                }
-
-                if let url = URL(string: post.photoURL) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        case .empty:
-                            ProgressView()
-                                .frame(maxWidth: .infinity, minHeight: 180)
-                        default:
-                            Color.gray.opacity(0.15)
-                                .frame(height: 180)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 220)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .clipped()
-                }
-
-                HStack(spacing: 20) {
-                    Button {
-                        toggleKudos(for: post)
-                    } label: {
-                        Label(
-                            "\(post.kudosCount)",
-                            systemImage: kudosedPostIds.contains(post.id) ? "hands.clap.fill" : "hands.clap"
-                        )
-                        .foregroundStyle(
-                            kudosedPostIds.contains(post.id) ? customization.accentColor.color : .secondary
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(kudosedPostIds.contains(post.id) ? "Remove kudos" : "Give kudos")
-
-                    Button {
-                        activeCommentsPost = post
-                    } label: {
-                        Label("\(post.commentCount)", systemImage: "bubble.right")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("View comments")
-
-                    if let url = URL(string: post.photoURL) {
-                        ShareLink(
-                            item: url,
-                            subject: Text(post.activityName),
-                            message: Text("\(post.username) completed \"\(post.activityName)\" on Sidequester! 🎉")
-                        ) {
-                            Image(systemName: "square.and.arrow.up")
-                                .foregroundStyle(.secondary)
-                        }
-                        .accessibilityLabel("Share this post")
-                    }
-
-                    Spacer()
-
-                    if let matchingActivity = activities.first(where: { $0.id == post.activityId }) {
-                        NavigationLink(destination: ActivityDetailView(activity: matchingActivity)) {
-                            Label("Try This", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(customization.accentColor.color)
-                    }
-
-                    Menu {
-                        Button(role: .destructive) {
-                            postToReport = post
-                        } label: {
-                            Label("Report Post", systemImage: "flag")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityLabel("More options")
-                }
-                .font(.subheadline)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func avatar(for post: Post) -> some View {
-        if let urlString = post.profileImageURL, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Image(systemName: "person.crop.circle.fill")
-                        .resizable()
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 40, height: 40)
-            .clipShape(Circle())
-        } else {
-            Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 38))
+    
+    private func statBox(title: String, value: String) -> some View {
+        VStack(spacing: 6) {
+            Text(value)
+                .font(.title3.bold())
+            Text(title)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(16)
+        .liquidGlass(cornerRadius: 16)
     }
+}
 
-    // MARK: Feed Data
+// MARK: - Customization Sheet
 
-    private func listenToMyFriends() {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-        db.collection("users").document(uid).collection("friends")
-            .addSnapshotListener { snapshot, _ in
-                myFriendIds = Set(snapshot?.documents.map { $0.documentID } ?? [])
-            }
-    }
-
-    /// Live-updates `preferences` from Firestore so "Recommended For You"
-    /// stays in sync if the person edits them from Profile mid-session.
-    private func listenToPreferences() {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-        db.collection("users").document(uid)
-            .addSnapshotListener { snapshot, _ in
-                preferences = ActivityPreferences.from(firestoreData: snapshot?.data())
-            }
-    }
-
-    private func reportPost(_ post: Post) {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-
-        db.collection("reports").addDocument(data: [
-            "postId": post.id,
-            "reportedUserId": post.userId,
-            "reporterId": uid,
-            "reason": "inappropriate",
-            "createdAt": Timestamp(date: Date())
-        ])
-    }
-
-    private func listenToFeed() {
-        db.collection("posts")
-            .order(by: "createdAt", descending: true)
-            .limit(to: 30)
-            .addSnapshotListener { snapshot, error in
-                isFeedLoading = false
-
-                if let error = error {
-                    feedErrorMessage = error.localizedDescription
-                    return
-                }
-
-                feedErrorMessage = nil
-                posts = snapshot?.documents.compactMap(post(from:)) ?? []
-                refreshMyKudos()
-            }
-    }
-
-    private func post(from doc: QueryDocumentSnapshot) -> Post? {
-        let data = doc.data()
-        guard let userId = data["userId"] as? String,
-              let username = data["username"] as? String,
-              let activityId = data["activityId"] as? String,
-              let activityName = data["activityName"] as? String,
-              let photoURL = data["photoURL"] as? String else {
-            return nil
-        }
-
-        let timestamp = data["createdAt"] as? Timestamp
-
-        return Post(
-            id: doc.documentID,
-            userId: userId,
-            username: username,
-            profileImageURL: data["profileImageURL"] as? String,
-            activityId: activityId,
-            activityName: activityName,
-            photoURL: photoURL,
-            points: data["points"] as? Int ?? 0,
-            createdAt: timestamp?.dateValue() ?? Date(),
-            kudosCount: data["kudosCount"] as? Int ?? 0,
-            commentCount: data["commentCount"] as? Int ?? 0
-        )
-    }
-
-    /// Checks which visible posts the signed-in user has already given
-    /// kudos to, so the button reflects the right filled/unfilled state.
-    private func refreshMyKudos() {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-
-        for post in posts {
-            db.collection("posts").document(post.id).collection("kudos").document(uid)
-                .getDocument { snapshot, _ in
-                    if snapshot?.exists == true {
-                        kudosedPostIds.insert(post.id)
-                    } else {
-                        kudosedPostIds.remove(post.id)
-                    }
-                }
-        }
-    }
-
-    private func toggleKudos(for post: Post) {
-        guard let uid = Auth.auth().currentUser?.uid else { return }
-
-        let postRef = db.collection("posts").document(post.id)
-        let kudosRef = postRef.collection("kudos").document(uid)
-        let alreadyKudosed = kudosedPostIds.contains(post.id)
-
-        // Optimistic local update so the tap feels instant.
-        if alreadyKudosed {
-            kudosedPostIds.remove(post.id)
-        } else {
-            kudosedPostIds.insert(post.id)
-        }
-
-        if alreadyKudosed {
-            kudosRef.delete()
-            postRef.updateData(["kudosCount": FieldValue.increment(Int64(-1))])
-        } else {
-            kudosRef.setData(["createdAt": Timestamp(date: Date())])
-            postRef.updateData(["kudosCount": FieldValue.increment(Int64(1))])
-        }
-    }
-
-    // MARK: Sections
-
-    private func activitySection(_ title: String, icon: String, activities: [Activity]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: icon).font(.title3.bold())
-            GlassCard {
-                VStack(spacing: 12) {
-                    ForEach(activities) { activity in
-                        NavigationLink(destination: ActivityDetailView(activity: activity)) {
-                            ActivityCard(activity: activity)
+private struct HomeThemeCustomizationSheet: View {
+    @EnvironmentObject private var customization: AppCustomization
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Accent Theme Color") {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
+                        ForEach(AppThemeColor.allCases) { theme in
+                            Button {
+                                customization.accentColor = theme
+                                customization.scheduleSync()
+                            } label: {
+                                VStack(spacing: 6) {
+                                    Circle()
+                                        .fill(theme.color)
+                                        .frame(width: 44, height: 44)
+                                        .overlay {
+                                            if customization.accentColor == theme {
+                                                Image(systemName: "checkmark")
+                                                    .font(.headline.bold())
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                    
+                                    Text(theme.displayName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.primary)
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 8)
+                }
+                
+                Section("Liquid Glass Styling") {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Glass Opacity")
+                            Spacer()
+                            Text("\(Int(customization.glassOpacity * 100))%")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $customization.glassOpacity, in: 0.2...1.0)
+                            .tint(customization.accentColor.color)
+                            .onChange(of: customization.glassOpacity) { _ in customization.scheduleSync() }
+                    }
+                    
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Liquid Blur")
+                            Spacer()
+                            Text("\(Int(customization.glassBlur)) pt")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $customization.glassBlur, in: 5...35)
+                            .tint(customization.accentColor.color)
+                            .onChange(of: customization.glassBlur) { _ in customization.scheduleSync() }
+                    }
+                    
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Corner Smoothness")
+                            Spacer()
+                            Text("\(Int(customization.glassCornerRadius)) pt")
+                                .foregroundStyle(.secondary)
+                        }
+                        Slider(value: $customization.glassCornerRadius, in: 12...34)
+                            .tint(customization.accentColor.color)
+                            .onChange(of: customization.glassCornerRadius) { _ in customization.scheduleSync() }
+                    }
+                }
+                
+                Section {
+                    Button(role: .destructive) {
+                        customization.reset()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Text("Reset Theme to Default")
+                            Spacer()
+                        }
                     }
                 }
             }
+            .navigationTitle("Customization")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+// MARK: - Activity Completion Sheet
+
+struct ActivityCompletionSheet: View {
+    let activity: Activity
+    
+    @EnvironmentObject private var customization: AppCustomization
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var proofMode: Int = 0
+    @State private var textNote: String = ""
+    @State private var selectedPhotoItem: PhotosPickerItem? = nil
+    @State private var selectedPhotoData: Data? = nil
+    @State private var isSubmitting = false
+    @State private var showSuccessAlert = false
+    
+    private let db = Firestore.firestore()
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(activity.shelter.uppercased())
+                                .font(.caption.bold())
+                                .foregroundStyle(customization.accentColor.color)
+                            Spacer()
+                            Text("+\(activity.points) PTS")
+                                .font(.headline.bold())
+                                .foregroundStyle(.purple)
+                        }
+                        
+                        Text(activity.name)
+                            .font(.title3.bold())
+                        
+                        HStack(spacing: 14) {
+                            Label(activity.time, systemImage: "clock")
+                            Label(activity.physical, systemImage: "figure.walk")
+                            Label(activity.cost, systemImage: "dollarsign.circle")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .liquidGlass(cornerRadius: 18)
+                    
+                    Text("LOG COMPLETION PROOF")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    
+                    Picker("Proof Mode", selection: $proofMode) {
+                        Text("✍️ Text Note (Instant)").tag(0)
+                        Text("📷 Photo Proof").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    if proofMode == 0 {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Enter quick details (ideal for simulator testing):")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            
+                            TextField("e.g. Completed during my afternoon walk!", text: $textNote, axis: .vertical)
+                                .lineLimit(3...5)
+                                .padding()
+                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                        }
+                    } else {
+                        VStack(spacing: 12) {
+                            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                                HStack {
+                                    Image(systemName: "photo")
+                                    Text(selectedPhotoData == nil ? "Choose Photo from Library" : "Change Photo")
+                                }
+                                .font(.subheadline.bold())
+                                .foregroundStyle(customization.accentColor.color)
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(customization.accentColor.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                            }
+                            .onChange(of: selectedPhotoItem) { newItem in
+                                Task {
+                                    if let data = try? await newItem?.loadTransferable(type: Data.self) {
+                                        selectedPhotoData = data
+                                    }
+                                }
+                            }
+                            
+                            if let data = selectedPhotoData, let uiImage = UIImage(data: data) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxHeight: 180)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+                        }
+                    }
+                    
+                    Button {
+                        completeActivity()
+                    } label: {
+                        HStack {
+                            if isSubmitting {
+                                ProgressView().tint(.white)
+                            } else {
+                                Text("Complete & Claim \(activity.points) Points")
+                                    .fontWeight(.bold)
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(
+                                colors: [customization.accentColor.color, .purple],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            in: RoundedRectangle(cornerRadius: 16)
+                        )
+                    }
+                    .disabled(isSubmitting)
+                }
+                .padding(20)
+            }
+            .navigationTitle("Sidequest")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .alert("Quest Complete! 🎉", isPresented: $showSuccessAlert) {
+                Button("Awesome!") { dismiss() }
+            } message: {
+                Text("You earned +\(activity.points) points and logged this activity to your account!")
+            }
+        }
+    }
+    
+    private func completeActivity() {
+        guard let uid = Auth.auth().currentUser?.uid else {
+            showSuccessAlert = true
+            return
+        }
+        
+        isSubmitting = true
+        let userRef = db.collection("users").document(uid)
+        
+        userRef.updateData([
+            "points": FieldValue.increment(Int64(activity.points)),
+            "completedActivities": FieldValue.arrayUnion([activity.id]),
+            "lifetimeCompletedActivities": FieldValue.increment(Int64(1)),
+            "lastCompletedAt": Timestamp(date: Date())
+        ]) { error in
+            isSubmitting = false
+            showSuccessAlert = true
+            
+            db.collection("activities").document(activity.id).updateData([
+                "completedCount": FieldValue.increment(Int64(1))
+            ])
         }
     }
 }
