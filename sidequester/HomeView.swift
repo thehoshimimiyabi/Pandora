@@ -8,6 +8,28 @@ import PhotosUI
 import FirebaseFirestore
 import FirebaseAuth
 
+// MARK: - Dropdown Filter Option
+
+enum QuestFilterOption: String, CaseIterable, Identifiable {
+    case all = "All Quests"
+    case friends = "Friends Completed"
+    case highestPoints = "Highest XP"
+    case quick = "Quick (<30m)"
+    case free = "Free Only"
+    
+    var id: String { rawValue }
+    
+    var icon: String {
+        switch self {
+        case .all: return "sparkles"
+        case .friends: return "person.2.fill"
+        case .highestPoints: return "flame.fill"
+        case .quick: return "bolt.fill"
+        case .free: return "dollarsign.circle"
+        }
+    }
+}
+
 // MARK: - Liquid Glass View Modifier
 
 struct LiquidGlassModifier: ViewModifier {
@@ -77,10 +99,11 @@ struct HomeView: View {
     
     @EnvironmentObject private var customization: AppCustomization
     
-    // Search Bar State
+    // Search Bar & Dropdown Filter State
     @State private var searchText = ""
     @State private var isSearching = false
     @FocusState private var isSearchFocused: Bool
+    @State private var selectedFilter: QuestFilterOption = .all
     
     // Sheets & Navigation
     @State private var selectedCategoryTitle: String? = nil
@@ -90,39 +113,62 @@ struct HomeView: View {
     @State private var showCustomizationSheet = false
     @State private var activityToComplete: Activity? = nil
     
-    // Bookmarking State
+    // User & Friend Data from Firestore
+    @State private var userCompletedActivityIDs: Set<String> = []
     @State private var bookmarkedIDs: Set<String> = []
-    
-    // Friend Completed IDs from Firestore
     @State private var friendCompletedActivityIDs: Set<String> = []
     
     private let db = Firestore.firestore()
     
-    // Top Quest (Highest points from the real activities pool)
-    private var topQuest: Activity? {
-        activities.max(by: { $0.points < $1.points }) ?? activities.first
+    // 1. FILTER OUT ALREADY COMPLETED QUESTS
+    private var uncompletedActivities: [Activity] {
+        activities.filter { !userCompletedActivityIDs.contains($0.id) }
     }
     
-    // Real Activities: Prioritizes activities friends have completed, then most popular
-    private var prioritizedActivities: [Activity] {
-        activities.sorted { act1, act2 in
-            let act1FriendCompleted = friendCompletedActivityIDs.contains(act1.id)
-            let act2FriendCompleted = friendCompletedActivityIDs.contains(act2.id)
-            
-            if act1FriendCompleted != act2FriendCompleted {
-                return act1FriendCompleted
-            }
-            return act1.completedCount > act2.completedCount
+    // 2. TOP QUEST (Highest points among uncompleted quests)
+    private var topQuest: Activity? {
+        uncompletedActivities.max(by: { $0.points < $1.points })
+    }
+    
+    // 3. APPLY DROPDOWN FILTER & PRIORITIZE FRIENDS
+    private var filteredActivities: [Activity] {
+        var list = uncompletedActivities
+        
+        switch selectedFilter {
+        case .all:
+            break
+        case .friends:
+            list = list.filter { friendCompletedActivityIDs.contains($0.id) }
+        case .highestPoints:
+            list.sort { $0.points > $1.points }
+        case .quick:
+            list = list.filter { $0.time.contains("15") || $0.time.contains("30") }
+        case .free:
+            list = list.filter { $0.cost.localizedCaseInsensitiveContains("Free") }
         }
+        
+        // Prioritize friend completions first if viewing All
+        if selectedFilter == .all {
+            list.sort { act1, act2 in
+                let act1Friend = friendCompletedActivityIDs.contains(act1.id)
+                let act2Friend = friendCompletedActivityIDs.contains(act2.id)
+                if act1Friend != act2Friend {
+                    return act1Friend
+                }
+                return act1.completedCount > act2.completedCount
+            }
+        }
+        
+        return list
     }
     
     var body: some View {
         ZStack(alignment: .top) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 22) {
-                    Spacer().frame(height: 70)
+                    Spacer().frame(height: 72)
                     
-                    // 1. WELCOME BACK BAR
+                    // WELCOME BACK BAR
                     Button {
                         showStatsSheet = true
                     } label: {
@@ -147,7 +193,7 @@ struct HomeView: View {
                                     .font(.subheadline.weight(.bold))
                                     .foregroundStyle(.primary)
                                 
-                                Text("Tap to view quest stats & streak")
+                                Text("\(userCompletedActivityIDs.count) Completed • \(uncompletedActivities.count) Available")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -164,7 +210,7 @@ struct HomeView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20)
                     
-                    // 2. CENTERED VIBE BUBBLES
+                    // THREE CENTERED VIBE BUBBLES
                     VStack(alignment: .center, spacing: 14) {
                         Text("EXPLORE VIBES")
                             .font(.caption2.weight(.heavy))
@@ -194,7 +240,7 @@ struct HomeView: View {
                     }
                     .padding(.horizontal, 20)
                     
-                    // 3. TOP QUEST CARD
+                    // FEATURED QUEST (Hides if already completed)
                     if let top = topQuest {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -258,28 +304,44 @@ struct HomeView: View {
                         }
                     }
                     
-                    // 4. REAL ACTIVITIES LIST (Prioritizing Friend & Community Activities)
+                    // SIDEQUEST FEED (Excludes completed quests)
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             Text("SIDEQUESTS FOR YOU")
                                 .font(.caption2.weight(.heavy))
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Text("\(prioritizedActivities.count) Available")
+                            Text("\(filteredActivities.count) Available")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 22)
                         
-                        if prioritizedActivities.isEmpty {
-                            Text("No quests currently available.")
+                        if uncompletedActivities.isEmpty {
+                            VStack(spacing: 10) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .font(.system(size: 40))
+                                    .foregroundStyle(.green)
+                                Text("All caught up! 🎉")
+                                    .font(.headline)
+                                Text("You have completed all available sidequests. Great work!")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(24)
+                            .liquidGlass(cornerRadius: 20)
+                            .padding(.horizontal, 20)
+                        } else if filteredActivities.isEmpty {
+                            Text("No quests match '\(selectedFilter.rawValue)' right now.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .center)
                                 .padding(.vertical, 24)
                         } else {
-                            ForEach(prioritizedActivities) { act in
+                            ForEach(filteredActivities) { act in
                                 realActivityCard(act: act)
+                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
                             }
                         }
                     }
@@ -287,25 +349,23 @@ struct HomeView: View {
                     Spacer().frame(height: 50)
                 }
             }
+            .animation(.easeInOut(duration: 0.25), value: userCompletedActivityIDs)
             .onAppear {
                 fetchUserDataAndBookmarks()
                 listenToFriendsActivity()
             }
             
-            // 5. TOP SEARCH BAR & MODAL OVERLAY
+            // PINNED TOP SEARCH BAR + DROPDOWN FILTER
             VStack(spacing: 0) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    // Search Bar
                     HStack(spacing: 8) {
                         Image(systemName: "magnifyingglass")
                             .foregroundStyle(.secondary)
                         
                         TextField("Search all activities...", text: $searchText)
                             .focused($isSearchFocused)
-                            .onTapGesture {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                                    isSearching = true
-                                }
-                            }
+                            .submitLabel(.search)
                         
                         if !searchText.isEmpty {
                             Button {
@@ -316,17 +376,42 @@ struct HomeView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                     .liquidGlass(cornerRadius: 16)
                     
+                    // FUNCTIONAL DROPDOWN MENU
+                    Menu {
+                        ForEach(QuestFilterOption.allCases) { option in
+                            Button {
+                                withAnimation {
+                                    selectedFilter = option
+                                }
+                            } label: {
+                                Label(option.rawValue, systemImage: option.icon)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: selectedFilter.icon)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .bold))
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(selectedFilter == .all ? .primary : customization.accentColor.color)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 11)
+                        .liquidGlass(cornerRadius: 16)
+                    }
+                    
+                    // Theme Customizer Button
                     Button {
                         showCustomizationSheet = true
                     } label: {
                         Image(systemName: "paintpalette.fill")
-                            .font(.system(size: 16, weight: .semibold))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(customization.accentColor.color)
-                            .padding(12)
+                            .padding(11)
                             .liquidGlass(cornerRadius: 16)
                     }
                     
@@ -343,14 +428,15 @@ struct HomeView: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
-                .padding(.horizontal, 20)
+                .padding(.horizontal, 16)
                 .padding(.top, 8)
                 .padding(.bottom, 10)
                 .background(.ultraThinMaterial.opacity(0.85))
                 
+                // Real Activities Search Overlay
                 if isSearching {
                     HomeSearchOverlay(
-                        activities: activities,
+                        activities: uncompletedActivities,
                         searchText: searchText,
                         onSelect: { selected in
                             withAnimation {
@@ -361,6 +447,13 @@ struct HomeView: View {
                         }
                     )
                     .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .onChange(of: isSearchFocused) { focused in
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    if focused {
+                        isSearching = true
+                    }
                 }
             }
         }
@@ -376,8 +469,12 @@ struct HomeView: View {
             .environmentObject(customization)
         }
         .sheet(isPresented: $showStatsSheet) {
-            HomeStatsSheet(displayName: displayName, activitiesCount: activities.count)
-                .environmentObject(customization)
+            HomeStatsSheet(
+                displayName: displayName,
+                completedCount: userCompletedActivityIDs.count,
+                availableCount: uncompletedActivities.count
+            )
+            .environmentObject(customization)
         }
         .sheet(isPresented: $showCustomizationSheet) {
             HomeThemeCustomizationSheet()
@@ -389,7 +486,7 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Real Activity Card with Working Bookmark & Complete Actions
+    // MARK: - Activity Card
     
     private func realActivityCard(act: Activity) -> some View {
         let isFriendFavorite = friendCompletedActivityIDs.contains(act.id)
@@ -439,7 +536,6 @@ struct HomeView: View {
             .foregroundStyle(.secondary)
             
             HStack(spacing: 16) {
-                // COMPLETE BUTTON
                 Button {
                     activityToComplete = act
                 } label: {
@@ -462,7 +558,6 @@ struct HomeView: View {
                 }
                 .buttonStyle(.plain)
                 
-                // WORKING BOOKMARK BUTTON
                 Button {
                     toggleBookmark(for: act.id)
                 } label: {
@@ -494,13 +589,18 @@ struct HomeView: View {
         .padding(.horizontal, 20)
     }
     
-    // MARK: - Firestore Listeners for Bookmarks & Friends
+    // MARK: - Firestore Listeners
     
     private func fetchUserDataAndBookmarks() {
         guard let uid = Auth.auth().currentUser?.uid else { return }
         
         db.collection("users").document(uid).addSnapshotListener { snapshot, _ in
             guard let data = snapshot?.data() else { return }
+            
+            // Listen to completed activities so they vanish immediately
+            if let completed = data["completedActivities"] as? [String] {
+                self.userCompletedActivityIDs = Set(completed)
+            }
             if let saved = data["bookmarkedActivities"] as? [String] {
                 self.bookmarkedIDs = Set(saved)
             }
@@ -547,8 +647,6 @@ struct HomeView: View {
         }
     }
     
-    // MARK: - Bubble Button Builder
-    
     private func bubbleButton(title: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: 8) {
@@ -585,7 +683,7 @@ struct HomeView: View {
     
     private func openCategory(title: String, filter: (Activity) -> Bool) {
         selectedCategoryTitle = title
-        selectedCategoryActivities = activities.filter(filter)
+        selectedCategoryActivities = uncompletedActivities.filter(filter)
         showCategorySheet = true
     }
 }
@@ -610,7 +708,7 @@ private struct HomeSearchOverlay: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("ALL ACTIVITIES (\(filtered.count))")
+            Text("AVAILABLE ACTIVITIES (\(filtered.count))")
                 .font(.caption2.bold())
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 22)
@@ -705,7 +803,8 @@ private struct HomeCategorySheet: View {
 
 private struct HomeStatsSheet: View {
     let displayName: String
-    let activitiesCount: Int
+    let completedCount: Int
+    let availableCount: Int
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
@@ -727,8 +826,8 @@ private struct HomeStatsSheet: View {
                 .padding(.top, 24)
                 
                 HStack(spacing: 16) {
-                    statBox(title: "Available Quests", value: "\(activitiesCount)")
-                    statBox(title: "Status", value: "Active 🔥")
+                    statBox(title: "Completed", value: "\(completedCount)")
+                    statBox(title: "Available", value: "\(availableCount)")
                 }
                 .padding(.horizontal, 20)
                 
