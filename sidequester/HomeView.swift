@@ -111,6 +111,7 @@ struct HomeView: View {
     @State private var showCategorySheet = false
     @State private var showStatsSheet = false
     @State private var showCustomizationSheet = false
+    @State private var showCreateActivitySheet = false
     @State private var activityToComplete: Activity? = nil
     
     // User & Friend Data from Firestore
@@ -120,17 +121,17 @@ struct HomeView: View {
     
     private let db = Firestore.firestore()
     
-    // 1. FILTER OUT ALREADY COMPLETED QUESTS
+    // 1. Filter out completed quests
     private var uncompletedActivities: [Activity] {
         activities.filter { !userCompletedActivityIDs.contains($0.id) }
     }
     
-    // 2. TOP QUEST (Highest points among uncompleted quests)
+    // 2. Top Quest
     private var topQuest: Activity? {
         uncompletedActivities.max(by: { $0.points < $1.points })
     }
     
-    // 3. APPLY DROPDOWN FILTER & PRIORITIZE FRIENDS
+    // 3. Apply Filter Option
     private var filteredActivities: [Activity] {
         var list = uncompletedActivities
         
@@ -147,7 +148,6 @@ struct HomeView: View {
             list = list.filter { $0.cost.localizedCaseInsensitiveContains("Free") }
         }
         
-        // Prioritize friend completions first if viewing All
         if selectedFilter == .all {
             list.sort { act1, act2 in
                 let act1Friend = friendCompletedActivityIDs.contains(act1.id)
@@ -210,7 +210,7 @@ struct HomeView: View {
                     .buttonStyle(.plain)
                     .padding(.horizontal, 20)
                     
-                    // THREE CENTERED VIBE BUBBLES
+                    // CENTERED VIBE BUBBLES
                     VStack(alignment: .center, spacing: 14) {
                         Text("EXPLORE VIBES")
                             .font(.caption2.weight(.heavy))
@@ -240,7 +240,7 @@ struct HomeView: View {
                     }
                     .padding(.horizontal, 20)
                     
-                    // FEATURED QUEST (Hides if already completed)
+                    // FEATURED QUEST
                     if let top = topQuest {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -304,7 +304,7 @@ struct HomeView: View {
                         }
                     }
                     
-                    // SIDEQUEST FEED (Excludes completed quests)
+                    // SIDEQUEST FEED
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             Text("SIDEQUESTS FOR YOU")
@@ -355,7 +355,7 @@ struct HomeView: View {
                 listenToFriendsActivity()
             }
             
-            // PINNED TOP SEARCH BAR + DROPDOWN FILTER
+            // PINNED TOP CONTROLS (SEARCH, DROPDOWN, CUSTOMIZER, ADD BUTTON)
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     // Search Bar
@@ -380,7 +380,7 @@ struct HomeView: View {
                     .padding(.vertical, 10)
                     .liquidGlass(cornerRadius: 16)
                     
-                    // FUNCTIONAL DROPDOWN MENU
+                    // Filter Dropdown Menu
                     Menu {
                         ForEach(QuestFilterOption.allCases) { option in
                             Button {
@@ -415,6 +415,25 @@ struct HomeView: View {
                             .liquidGlass(cornerRadius: 16)
                     }
                     
+                    // ADD NEW ACTIVITY BUTTON
+                    Button {
+                        showCreateActivitySheet = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(11)
+                            .background(
+                                LinearGradient(
+                                    colors: [customization.accentColor.color, .purple],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                in: RoundedRectangle(cornerRadius: 16)
+                            )
+                            .shadow(color: customization.accentColor.color.opacity(0.3), radius: 6, y: 2)
+                    }
+                    
                     if isSearching {
                         Button("Done") {
                             withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
@@ -433,7 +452,6 @@ struct HomeView: View {
                 .padding(.bottom, 10)
                 .background(.ultraThinMaterial.opacity(0.85))
                 
-                // Real Activities Search Overlay
                 if isSearching {
                     HomeSearchOverlay(
                         activities: uncompletedActivities,
@@ -456,6 +474,10 @@ struct HomeView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showCreateActivitySheet) {
+            CreateActivitySheet()
+                .environmentObject(customization)
         }
         .sheet(isPresented: $showCategorySheet) {
             HomeCategorySheet(
@@ -526,6 +548,13 @@ struct HomeView: View {
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.primary)
             
+            if !act.description.isEmpty {
+                Text(act.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            
             HStack(spacing: 12) {
                 Label(act.time, systemImage: "clock")
                 Label(act.physical, systemImage: "figure.walk")
@@ -589,7 +618,7 @@ struct HomeView: View {
         .padding(.horizontal, 20)
     }
     
-    // MARK: - Firestore Listeners
+    // MARK: - Firestore Sync
     
     private func fetchUserDataAndBookmarks() {
         guard let uid = Auth.auth().currentUser?.uid else { return }
@@ -597,7 +626,6 @@ struct HomeView: View {
         db.collection("users").document(uid).addSnapshotListener { snapshot, _ in
             guard let data = snapshot?.data() else { return }
             
-            // Listen to completed activities so they vanish immediately
             if let completed = data["completedActivities"] as? [String] {
                 self.userCompletedActivityIDs = Set(completed)
             }
@@ -685,6 +713,231 @@ struct HomeView: View {
         selectedCategoryTitle = title
         selectedCategoryActivities = uncompletedActivities.filter(filter)
         showCategorySheet = true
+    }
+}
+
+// MARK: - Create Activity Sheet (User Adds Activities to Firestore)
+
+struct CreateActivitySheet: View {
+    @EnvironmentObject private var customization: AppCustomization
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var name: String = ""
+    @State private var descriptionText: String = ""
+    @State private var time: String = "15-30 mins"
+    @State private var shelter: String = "Outdoor"
+    @State private var physical: String = "Low"
+    @State private var cost: String = "Free"
+    @State private var points: Int = 15
+    @State private var age: String = "Any"
+    @State private var requirement: String = "None"
+    
+    @State private var isSubmitting = false
+    @State private var showSuccessAlert = false
+    @State private var errorMessage = ""
+    
+    private let db = Firestore.firestore()
+    
+    private let timeOptions = ["15-30 mins", "30-60 mins", "1hr+"]
+    private let shelterOptions = ["Outdoor", "Indoor", "Both"]
+    private let physicalOptions = ["Low", "Moderate", "High"]
+    private let costOptions = ["Free", "$", "$$"]
+    private let pointsOptions = [10, 15, 20, 25, 30]
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Header Banner
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("NEW SIDEQUEST")
+                            .font(.caption.bold())
+                            .foregroundStyle(customization.accentColor.color)
+                        Text("Create an Activity")
+                            .font(.title2.bold())
+                        Text("Add a fun quest to the community board for other explorers to discover.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .liquidGlass(cornerRadius: 18)
+                    
+                    // Name & Description
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("ACTIVITY DETAILS")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        
+                        TextField("Quest title (e.g. Find 3 local street murals)", text: $name)
+                            .padding()
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        
+                        TextField("Brief description or instructions (optional)", text: $descriptionText, axis: .vertical)
+                            .lineLimit(2...4)
+                            .padding()
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    
+                    // Activity Properties
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("SETTINGS & TAGS")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        
+                        // Estimated Time
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Estimated Time")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("Time", selection: $time) {
+                                ForEach(timeOptions, id: \.self) { Text($0).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        
+                        // Shelter
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Environment")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("Shelter", selection: $shelter) {
+                                ForEach(shelterOptions, id: \.self) { Text($0).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        
+                        // Physical Intensity
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Physical Intensity")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("Physical", selection: $physical) {
+                                ForEach(physicalOptions, id: \.self) { Text($0).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        
+                        // Cost
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Cost")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("Cost", selection: $cost) {
+                                ForEach(costOptions, id: \.self) { Text($0).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        
+                        // Points Reward
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("XP / Points Reward")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("Points", selection: $points) {
+                                ForEach(pointsOptions, id: \.self) { Text("+\($0) pts").tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                    }
+                    .padding(16)
+                    .liquidGlass(cornerRadius: 18)
+                    
+                    if !errorMessage.isEmpty {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    
+                    // Submit Button
+                    Button {
+                        submitActivity()
+                    } label: {
+                        HStack {
+                            if isSubmitting {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "plus.circle.fill")
+                                Text("Publish Sidequest")
+                                    .fontWeight(.bold)
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            LinearGradient(
+                                colors: [customization.accentColor.color, .purple],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            ),
+                            in: RoundedRectangle(cornerRadius: 16)
+                        )
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
+                    .opacity(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.6 : 1)
+                }
+                .padding(20)
+            }
+            .navigationTitle("Add Sidequest")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .alert("Sidequest Created! 🎉", isPresented: $showSuccessAlert) {
+                Button("Done") { dismiss() }
+            } message: {
+                Text("Your activity is now live and can be explored and logged by other players!")
+            }
+        }
+    }
+    
+    private func submitActivity() {
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else { return }
+        
+        guard let uid = Auth.auth().currentUser?.uid else {
+            errorMessage = "You must be logged in to create a quest."
+            return
+        }
+        
+        isSubmitting = true
+        errorMessage = ""
+        
+        let newActivityData: [String: Any] = [
+            "name": cleanName,
+            "description": descriptionText.trimmingCharacters(in: .whitespacesAndNewlines),
+            "age": age,
+            "physical": physical,
+            "cost": cost,
+            "shelter": shelter,
+            "time": time,
+            "requirement": requirement,
+            "points": points,
+            "completedCount": 0,
+            "createdBy": uid,
+            "createdAt": Timestamp(date: Date())
+        ]
+        
+        let newDocRef = db.collection("activities").document()
+        newDocRef.setData(newActivityData) { error in
+            if let error = error {
+                isSubmitting = false
+                errorMessage = error.localizedDescription
+                return
+            }
+            
+            // Record creator activity in user document
+            db.collection("users").document(uid).updateData([
+                "activitiesCreated": FieldValue.increment(Int64(1)),
+                "createdActivities": FieldValue.arrayUnion([newDocRef.documentID])
+            ]) { _ in
+                isSubmitting = false
+                showSuccessAlert = true
+            }
+        }
     }
 }
 
